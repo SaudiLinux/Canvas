@@ -1,0 +1,9 @@
+# متطلبات تطبيق Canvas
+# المطور: Saudi Linux (SaudiLinux7@gmail.com)
+
+# المكتبات الأساسية
+tkinter>=8.6  # مضمنة مع Python عادة
+
+# مكتبات إضافية (للوظائف المتقدمة)
+pywin32>=223; platform_system=="Windows"  # لإنشاء اختصارات في نظام Windows
+Pillow>=8.0.0  # للتعامل مع الصور وتحويل الرسومات إلى صور
