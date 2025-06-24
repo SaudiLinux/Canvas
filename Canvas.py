@@ -7,11 +7,293 @@ Canvas - أداة رسم بسيطة
 البريد الإلكتروني: SaudiLinux7@gmail.com
 '''
 
+import os
+import sys
+import json
 import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog, messagebox
-import os
-import json
+import time
+import threading
+import requests
+import subprocess
+import platform
 from datetime import datetime
+
+class UpdateManager:
+    def __init__(self, parent, app_version="1.0"):
+        self.parent = parent
+        self.current_version = app_version
+        self.update_url = "https://api.github.com/repos/SaudiLinux/Canvas/releases/latest"
+        self.download_url = "https://github.com/SaudiLinux/Canvas/releases/download/"
+        self.update_available = False
+        self.latest_version = ""
+        self.update_info = {}
+        self.checking = False
+        
+        # إعدادات التحديث التلقائي
+        self.auto_check = True  # التحقق التلقائي من التحديثات
+        self.check_interval = 24 * 60 * 60  # الفاصل الزمني للتحقق (بالثواني) - يوم واحد
+        self.last_check_time = 0  # وقت آخر تحقق
+        
+        # تحميل إعدادات التحديث
+        self.load_update_settings()
+        
+        # بدء التحقق من التحديثات في الخلفية إذا كان التحقق التلقائي مفعلاً
+        if self.auto_check:
+            threading.Thread(target=self.background_check, daemon=True).start()
+    
+    def load_update_settings(self):
+        """تحميل إعدادات التحديث من ملف الإعدادات"""
+        try:
+            # تحديد مسار ملف الإعدادات
+            settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+            
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+                
+                # تحميل إعدادات التحديث إذا كانت موجودة
+                if "updates" in settings:
+                    self.auto_check = settings["updates"].get("auto_check", True)
+                    self.check_interval = settings["updates"].get("check_interval", 24 * 60 * 60)
+                    self.last_check_time = settings["updates"].get("last_check_time", 0)
+        except Exception as e:
+            print(f"خطأ في تحميل إعدادات التحديث: {str(e)}")
+    
+    def save_update_settings(self):
+        """حفظ إعدادات التحديث في ملف الإعدادات"""
+        try:
+            # تحديد مسار ملف الإعدادات
+            settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+            
+            # تحميل الإعدادات الحالية أو إنشاء إعدادات جديدة
+            settings = {}
+            if os.path.exists(settings_path):
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+            
+            # تحديث إعدادات التحديث
+            if "updates" not in settings:
+                settings["updates"] = {}
+            
+            settings["updates"]["auto_check"] = self.auto_check
+            settings["updates"]["check_interval"] = self.check_interval
+            settings["updates"]["last_check_time"] = self.last_check_time
+            
+            # حفظ الإعدادات
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"خطأ في حفظ إعدادات التحديث: {str(e)}")
+    
+    def background_check(self):
+        """التحقق من التحديثات في الخلفية"""
+        # الانتظار قليلاً قبل التحقق للسماح للتطبيق بالتحميل بالكامل
+        time.sleep(5)
+        
+        # التحقق مما إذا كان الوقت قد حان للتحقق من التحديثات
+        current_time = time.time()
+        if current_time - self.last_check_time >= self.check_interval:
+            self.check_for_updates(show_no_updates=False)
+    
+    def check_for_updates(self, show_no_updates=True):
+        """التحقق من وجود تحديثات جديدة"""
+        if self.checking:
+            return
+        
+        self.checking = True
+        try:
+            # تحديث وقت آخر تحقق
+            self.last_check_time = time.time()
+            self.save_update_settings()
+            
+            # محاولة الاتصال بالخادم للتحقق من التحديثات
+            response = requests.get(self.update_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                self.latest_version = data.get("tag_name", "").replace("v", "")
+                
+                # مقارنة الإصدارات
+                if self.compare_versions(self.latest_version, self.current_version) > 0:
+                    self.update_available = True
+                    self.update_info = {
+                        "version": self.latest_version,
+                        "description": data.get("body", ""),
+                        "download_url": data.get("assets", [])[0].get("browser_download_url", "") if data.get("assets") else ""
+                    }
+                    
+                    # عرض إشعار التحديث
+                    self.parent.after(0, self.show_update_notification)
+                elif show_no_updates:
+                    # عرض رسالة عدم وجود تحديثات إذا كان مطلوبًا
+                    self.parent.after(0, lambda: messagebox.showinfo("التحديثات", "أنت تستخدم أحدث إصدار من البرنامج."))
+            else:
+                if show_no_updates:
+                    self.parent.after(0, lambda: messagebox.showwarning("خطأ في التحديث", f"فشل الاتصال بخادم التحديثات. رمز الحالة: {response.status_code}"))
+        except requests.exceptions.RequestException as e:
+            if show_no_updates:
+                self.parent.after(0, lambda: messagebox.showwarning("خطأ في التحديث", f"فشل الاتصال بخادم التحديثات: {str(e)}"))
+        except Exception as e:
+            if show_no_updates:
+                self.parent.after(0, lambda: messagebox.showwarning("خطأ في التحديث", f"حدث خطأ أثناء التحقق من التحديثات: {str(e)}"))
+        finally:
+            self.checking = False
+    
+    def compare_versions(self, version1, version2):
+        """مقارنة إصدارين وإرجاع 1 إذا كان الإصدار الأول أحدث، -1 إذا كان الإصدار الثاني أحدث، 0 إذا كانا متساويين"""
+        v1_parts = [int(x) for x in version1.split(".")]
+        v2_parts = [int(x) for x in version2.split(".")]
+        
+        # إضافة أصفار إذا كان أحد الإصدارين أقصر من الآخر
+        while len(v1_parts) < len(v2_parts):
+            v1_parts.append(0)
+        while len(v2_parts) < len(v1_parts):
+            v2_parts.append(0)
+        
+        # مقارنة كل جزء
+        for i in range(len(v1_parts)):
+            if v1_parts[i] > v2_parts[i]:
+                return 1
+            elif v1_parts[i] < v2_parts[i]:
+                return -1
+        
+        return 0
+    
+    def show_update_notification(self):
+        """عرض إشعار بوجود تحديث جديد"""
+        if self.update_available:
+            response = messagebox.askyesno(
+                "تحديث جديد متاح",
+                f"تم العثور على إصدار جديد من البرنامج: {self.latest_version}\n\n" +
+                f"الإصدار الحالي: {self.current_version}\n\n" +
+                f"ملاحظات الإصدار:\n{self.update_info['description']}\n\n" +
+                "هل ترغب في تنزيل وتثبيت هذا التحديث الآن؟"
+            )
+            
+            if response:
+                self.download_and_install_update()
+    
+    def download_and_install_update(self):
+        """تنزيل وتثبيت التحديث"""
+        try:
+            # إنشاء نافذة التقدم
+            progress_window = tk.Toplevel(self.parent)
+            progress_window.title("تنزيل التحديث")
+            progress_window.geometry("400x150")
+            progress_window.resizable(False, False)
+            progress_window.transient(self.parent)
+            progress_window.grab_set()
+            
+            # تكوين النافذة
+            progress_window.configure(bg="#f0f0f0")
+            
+            # إضافة عناصر واجهة المستخدم
+            tk.Label(progress_window, text=f"جاري تنزيل الإصدار {self.latest_version}...", bg="#f0f0f0").pack(pady=10)
+            
+            progress_bar = ttk.Progressbar(progress_window, orient=tk.HORIZONTAL, length=350, mode='indeterminate')
+            progress_bar.pack(pady=10, padx=20)
+            progress_bar.start(10)
+            
+            status_label = tk.Label(progress_window, text="جاري التنزيل...", bg="#f0f0f0")
+            status_label.pack(pady=10)
+            
+            # بدء التنزيل في خيط منفصل
+            threading.Thread(
+                target=self._download_update_thread,
+                args=(progress_window, progress_bar, status_label),
+                daemon=True
+            ).start()
+            
+        except Exception as e:
+            messagebox.showerror("خطأ في التحديث", f"حدث خطأ أثناء تنزيل التحديث: {str(e)}")
+    
+    def _download_update_thread(self, progress_window, progress_bar, status_label):
+        """خيط لتنزيل وتثبيت التحديث"""
+        try:
+            # تحديد مسار التنزيل
+            download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # تحديد اسم ملف التحديث
+            update_filename = f"Canvas_Update_v{self.latest_version}.zip"
+            update_path = os.path.join(download_dir, update_filename)
+            
+            # تنزيل ملف التحديث
+            response = requests.get(self.update_info["download_url"], stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            # تحديث شريط التقدم ليكون محددًا
+            progress_window.after(0, lambda: progress_bar.configure(mode='determinate', maximum=total_size))
+            progress_window.after(0, lambda: progress_bar.stop())
+            
+            # كتابة الملف
+            downloaded = 0
+            with open(update_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress_window.after(0, lambda d=downloaded: progress_bar.configure(value=d))
+                        progress_window.after(0, lambda d=downloaded: status_label.configure(
+                            text=f"جاري التنزيل... {d/total_size:.1%} ({d/1024/1024:.1f} MB / {total_size/1024/1024:.1f} MB)"
+                        ))
+            
+            # تحديث الحالة
+            progress_window.after(0, lambda: status_label.configure(text="جاري تثبيت التحديث..."))
+            progress_window.after(0, lambda: progress_bar.configure(mode='indeterminate', maximum=100))
+            progress_window.after(0, lambda: progress_bar.start(10))
+            
+            # تثبيت التحديث
+            self._install_update(update_path, progress_window)
+            
+        except Exception as e:
+            progress_window.after(0, lambda: messagebox.showerror("خطأ في التحديث", f"حدث خطأ أثناء تنزيل التحديث: {str(e)}"))
+            progress_window.after(0, progress_window.destroy)
+    
+    def _install_update(self, update_path, progress_window):
+        """تثبيت التحديث"""
+        try:
+            # إنشاء سكريبت التثبيت
+            install_script = os.path.join(os.path.dirname(update_path), "install_update.bat")
+            
+            # تحديد مسار البرنامج الحالي
+            app_path = os.path.dirname(os.path.abspath(__file__))
+            
+            # كتابة سكريبت التثبيت
+            with open(install_script, "w") as f:
+                f.write(f"@echo off\n")
+                f.write(f"echo جاري تثبيت التحديث...\n")
+                f.write(f"timeout /t 2 /nobreak > nul\n")
+                f.write(f"echo استخراج ملفات التحديث...\n")
+                
+                # استخراج ملفات التحديث
+                f.write(f"powershell -Command \"Expand-Archive -Path '{update_path}' -DestinationPath '{app_path}' -Force\"\n")
+                
+                # إعادة تشغيل البرنامج
+                f.write(f"echo تم تثبيت التحديث بنجاح!\n")
+                f.write(f"echo إعادة تشغيل البرنامج...\n")
+                f.write(f"timeout /t 2 /nobreak > nul\n")
+                f.write(f"start "" \"{sys.executable}\" \"{os.path.join(app_path, 'Canvas.py')}\"\n")
+                f.write(f"del \"{update_path}\"\n")
+                f.write(f"del \"%~f0\"\n")
+            
+            # إغلاق نافذة التقدم
+            progress_window.after(0, progress_window.destroy)
+            
+            # عرض رسالة نجاح
+            progress_window.after(0, lambda: messagebox.showinfo(
+                "تم تنزيل التحديث",
+                "تم تنزيل التحديث بنجاح. سيتم إغلاق البرنامج الآن وتثبيت التحديث."
+            ))
+            
+            # تشغيل سكريبت التثبيت وإغلاق البرنامج
+            subprocess.Popen([install_script], shell=True)
+            self.parent.after(1000, self.parent.destroy)
+            
+        except Exception as e:
+            progress_window.after(0, lambda: messagebox.showerror("خطأ في التحديث", f"حدث خطأ أثناء تثبيت التحديث: {str(e)}"))
+            progress_window.after(0, progress_window.destroy)
+
 
 class CanvasApp:
     def __init__(self, root):
@@ -35,6 +317,10 @@ class CanvasApp:
         self.redo_history = []
         self.file_path = None
         self.is_modified = False
+        
+        # إنشاء مدير التحديثات
+        self.app_version = "1.0"
+        self.update_manager = UpdateManager(self.root, self.app_version)
         
         # إنشاء القائمة الرئيسية
         self.create_menu()
@@ -90,6 +376,18 @@ class CanvasApp:
         tools_menu.add_separator()
         tools_menu.add_command(label="اختيار لون", command=self.choose_color)
         menubar.add_cascade(label="أدوات", menu=tools_menu)
+        
+        # قائمة التحديثات
+        update_menu = tk.Menu(menubar, tearoff=0)
+        update_menu.add_command(label="التحقق من التحديثات", command=lambda: self.update_manager.check_for_updates(True))
+        update_menu.add_separator()
+        
+        # متغير لتخزين حالة التحديث التلقائي
+        self.auto_update_var = tk.BooleanVar(value=self.update_manager.auto_check)
+        update_menu.add_checkbutton(label="التحقق التلقائي من التحديثات", 
+                                variable=self.auto_update_var, 
+                                command=self.toggle_auto_update)
+        menubar.add_cascade(label="التحديثات", menu=update_menu)
         
         # قائمة المساعدة
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -490,15 +788,37 @@ class CanvasApp:
             title = f"*{title}"
         self.root.title(title)
     
+    def toggle_auto_update(self):
+        """تفعيل أو تعطيل التحديث التلقائي"""
+        # تحديث قيمة المتغير في مدير التحديثات
+        self.update_manager.auto_check = self.auto_update_var.get()
+        self.update_manager.save_update_settings()
+        
+        # عرض رسالة تأكيد
+        if self.update_manager.auto_check:
+            messagebox.showinfo("التحديثات التلقائية", "تم تفعيل التحقق التلقائي من التحديثات.")
+        else:
+            messagebox.showinfo("التحديثات التلقائية", "تم تعطيل التحقق التلقائي من التحديثات.")
+    
     def show_about(self):
-        about_text = """Canvas - أداة رسم بسيطة
-        الإصدار: 1.0
+        about_window = tk.Toplevel(self.root)
+        about_window.title("حول البرنامج")
+        about_window.geometry("400x300")
+        about_window.resizable(False, False)
+        about_window.transient(self.root)
+        about_window.grab_set()
         
-        تم تطويره بواسطة: Saudi Linux
-        البريد الإلكتروني: SaudiLinux7@gmail.com
+        # تكوين النافذة
+        about_window.configure(bg="#f0f0f0")
         
-        © 2023 جميع الحقوق محفوظة."""
-        messagebox.showinfo("حول البرنامج", about_text)
+        # إضافة المعلومات
+        tk.Label(about_window, text="Canvas - أداة الرسم", font=("Arial", 16, "bold"), bg="#f0f0f0").pack(pady=10)
+        tk.Label(about_window, text=f"الإصدار {self.app_version}", bg="#f0f0f0").pack()
+        tk.Label(about_window, text="\n© 2023 Saudi Linux", bg="#f0f0f0").pack(pady=10)
+        tk.Label(about_window, text="SaudiLinux7@gmail.com", bg="#f0f0f0").pack()
+        
+        # زر الإغلاق
+        ttk.Button(about_window, text="إغلاق", command=about_window.destroy).pack(pady=20)
     
     def exit_app(self):
         if self.is_modified:
